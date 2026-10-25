@@ -145,7 +145,7 @@ def cmd_collect(a):
 
 # ---------- statistics ----------
 
-def cmd_stats(a):
+def _stats(a):
     import pandas as pd
     import matplotlib
     matplotlib.use("Agg")
@@ -153,7 +153,8 @@ def cmd_stats(a):
 
     if not FLOW_CSV.exists():
         sys.exit("No data yet - run 'collect' first.")
-    STATS.mkdir(exist_ok=True)
+    out = Path(a.out)
+    out.mkdir(exist_ok=True, parents=True)
     days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
 
     f = pd.read_csv(FLOW_CSV)
@@ -207,15 +208,57 @@ def cmd_stats(a):
     ax.set_title("Congestion % by weekday and hour")
     fig.colorbar(im)
     fig.tight_layout()
-    fig.savefig(STATS / "heatmap.png", dpi=120)
+    fig.savefig(out / "heatmap.png", dpi=120)
 
     fig, ax = plt.subplots(figsize=(10, 4))
     l7.set_index("ts")["cong"].resample("1h").mean().plot(ax=ax)
     ax.set_title("Congestion %, last 7 days (hourly)")
     ax.set_ylabel("%")
     fig.tight_layout()
-    fig.savefig(STATS / "last7days.png", dpi=120)
-    print(f"\nCharts saved to {STATS}/")
+    fig.savefig(out / "last7days.png", dpi=120)
+    print(f"\nCharts saved to {out}/")
+
+
+class Tee:
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, x):
+        for st in self.streams:
+            st.write(x)
+
+    def flush(self):
+        for st in self.streams:
+            st.flush()
+
+
+def cmd_stats(a):
+    import contextlib
+    import html
+    import io
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(Tee(sys.stdout, buf)):
+        _stats(a)
+    if a.html:
+        updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        page = f"""<!doctype html>
+<html lang="sk"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Bratislava - premavka</title>
+<style>
+:root {{ color-scheme: light dark; }}
+body {{ font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 16px; line-height: 1.4; }}
+img {{ max-width: 100%; height: auto; }}
+pre {{ overflow-x: auto; background: rgba(128,128,128,.15); padding: 12px; border-radius: 8px; font-size: 13px; }}
+</style></head><body>
+<h1>Bratislava - živá premávka</h1>
+<p>Aktualizované: {updated}</p>
+<h2>Posledných 7 dní</h2><img src="last7days.png" alt="Posledných 7 dní">
+<h2>Zápchy podľa dňa a hodiny</h2><img src="heatmap.png" alt="Heatmapa">
+<h2>Podrobné čísla</h2><pre>{html.escape(buf.getvalue())}</pre>
+</body></html>"""
+        (Path(a.out) / "index.html").write_text(page, encoding="utf-8")
+        print(f"HTML page saved to {a.out}/index.html")
 
 
 def main():
@@ -233,6 +276,8 @@ def main():
 
     s = sub.add_parser("stats", help="print short/long term statistics and save charts")
     s.add_argument("--tz", default="Europe/Bratislava")
+    s.add_argument("--out", default="stats", help="output folder for charts")
+    s.add_argument("--html", action="store_true", help="also write index.html (for GitHub Pages)")
     s.set_defaults(fn=cmd_stats)
 
     a = ap.parse_args()
