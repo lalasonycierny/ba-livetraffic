@@ -1,0 +1,25 @@
+name: collect-traffic
+on:
+  schedule:
+    - cron: "*/30 * * * *"
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install requests
+      - run: python traffic.py collect "$TRAFFIC_URL"
+        env:
+          TOMTOM_KEY: ${{ secrets.TOMTOM_KEY }}
+          TRAFFIC_URL: "https://plan.tomtom.com/en?p=48.1323,17.14649,10.18z#mode=viewport+viewport=48.07023,17.92671,6.61,0,-0+ver=3"
+      - run: |
+          git config user.name "github-actions"
+          git config user.email "actions@github.com"
+          git add data
+          git diff --cached --quiet || (git commit -m "traffic data" && git push)
