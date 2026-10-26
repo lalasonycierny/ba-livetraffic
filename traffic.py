@@ -42,10 +42,6 @@ INC_CSV = DATA / "incidents.csv"
 FLOW_FIELDS = ["ts", "point", "lat", "lon", "cur", "free", "cur_tt", "free_tt", "confidence", "closed"]
 INC_FIELDS = ["ts", "id", "cat", "magnitude", "delay_s", "length_m", "from", "to", "roads", "start"]
 
-CATS = {0: "Unknown", 1: "Accident", 2: "Fog", 3: "Dangerous", 4: "Rain", 5: "Ice", 6: "Jam",
-        7: "Lane closed", 8: "Road closed", 9: "Road works", 10: "Wind", 11: "Flooding",
-        14: "Broken down"}
-
 
 # ---------- collecting ----------
 
@@ -145,120 +141,9 @@ def cmd_collect(a):
 
 # ---------- statistics ----------
 
-def _stats(a):
-    import pandas as pd
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
-
-    if not FLOW_CSV.exists():
-        sys.exit("No data yet - run 'collect' first.")
-    out = Path(a.out)
-    out.mkdir(exist_ok=True, parents=True)
-    days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-
-    f = pd.read_csv(FLOW_CSV)
-    f["ts"] = pd.to_datetime(f["ts"], utc=True).dt.tz_convert(a.tz)
-    f = f[f["free"] > 0].copy()
-    f["cong"] = (1 - f["cur"] / f["free"]).clip(0, 1) * 100  # % slower than free flow
-    f["hour"] = f["ts"].dt.hour
-    f["dow"] = f["ts"].dt.dayofweek
-    now = f["ts"].max()
-
-    print(f"\nData: {f['ts'].min():%Y-%m-%d %H:%M} -> {now:%Y-%m-%d %H:%M} ({a.tz}), {len(f)} measurements")
-    print("Congestion % = how much slower than free-flow speed (0 = free road).\n")
-
-    print("=== SHORT TERM: last 24 h, average congestion % by hour ===")
-    l24 = f[f["ts"] > now - pd.Timedelta(hours=24)]
-    print(l24.groupby("hour")["cong"].mean().round(1).to_string())
-
-    print("\n=== SHORT TERM: last 7 days, average congestion % per day ===")
-    l7 = f[f["ts"] > now - pd.Timedelta(days=7)]
-    print(l7.groupby(l7["ts"].dt.date)["cong"].mean().round(1).to_string())
-    if len(l7):
-        print(f"Worst hour of the last 7 days: {int(l7.groupby('hour')['cong'].mean().idxmax())}:00")
-
-    print("\n=== LONG TERM: average congestion % by weekday x hour ===")
-    pivot = f.pivot_table(index="dow", columns="hour", values="cong", aggfunc="mean")
-    pivot.index = [days[i] for i in pivot.index]
-    print(pivot.round(0).to_string())
-
-    print("\n=== LONG TERM: monthly average congestion % ===")
-    print(f.groupby(f["ts"].dt.strftime("%Y-%m"))["cong"].mean().round(1).to_string())
-
-    print("\n=== Most congested measuring points (avg %) ===")
-    print(f.groupby("point")["cong"].mean().sort_values(ascending=False).head(5).round(1).to_string())
-
-    if INC_CSV.exists():
-        inc = pd.read_csv(INC_CSV)
-        inc["ts"] = pd.to_datetime(inc["ts"], utc=True).dt.tz_convert(a.tz)
-        inc["cat"] = inc["cat"].map(CATS).fillna("Other")
-        u = inc.groupby("id").agg(first_seen=("ts", "min"), cat=("cat", "first"),
-                                  delay_s=("delay_s", "max"), roads=("roads", "first"))
-        print("\n=== Incidents by type (unique) ===")
-        print(u["cat"].value_counts().to_string())
-        print("\n=== Incidents per day, last 14 days ===")
-        print(u.groupby(u["first_seen"].dt.date).size().tail(14).to_string())
-        print(f"\nTotal delay from incidents: {u['delay_s'].fillna(0).sum() / 3600:.1f} h")
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    im = ax.imshow(pivot.values, aspect="auto", cmap="RdYlGn_r")
-    ax.set_xticks(range(len(pivot.columns)), pivot.columns)
-    ax.set_yticks(range(len(pivot.index)), pivot.index)
-    ax.set_title("Congestion % by weekday and hour")
-    fig.colorbar(im)
-    fig.tight_layout()
-    fig.savefig(out / "heatmap.png", dpi=120)
-
-    fig, ax = plt.subplots(figsize=(10, 4))
-    l7.set_index("ts")["cong"].resample("1h").mean().plot(ax=ax)
-    ax.set_title("Congestion %, last 7 days (hourly)")
-    ax.set_ylabel("%")
-    fig.tight_layout()
-    fig.savefig(out / "last7days.png", dpi=120)
-    print(f"\nCharts saved to {out}/")
-
-
-class Tee:
-    def __init__(self, *streams):
-        self.streams = streams
-
-    def write(self, x):
-        for st in self.streams:
-            st.write(x)
-
-    def flush(self):
-        for st in self.streams:
-            st.flush()
-
-
 def cmd_stats(a):
-    import contextlib
-    import html
-    import io
-    buf = io.StringIO()
-    with contextlib.redirect_stdout(Tee(sys.stdout, buf)):
-        _stats(a)
-    if a.html:
-        updated = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
-        page = f"""<!doctype html>
-<html lang="sk"><head><meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Bratislava - premavka</title>
-<style>
-:root {{ color-scheme: light dark; }}
-body {{ font-family: system-ui, sans-serif; max-width: 960px; margin: 0 auto; padding: 16px; line-height: 1.4; }}
-img {{ max-width: 100%; height: auto; }}
-pre {{ overflow-x: auto; background: rgba(128,128,128,.15); padding: 12px; border-radius: 8px; font-size: 13px; }}
-</style></head><body>
-<h1>Bratislava - živá premávka</h1>
-<p>Aktualizované: {updated}</p>
-<h2>Posledných 7 dní</h2><img src="last7days.png" alt="Posledných 7 dní">
-<h2>Zápchy podľa dňa a hodiny</h2><img src="heatmap.png" alt="Heatmapa">
-<h2>Podrobné čísla</h2><pre>{html.escape(buf.getvalue())}</pre>
-</body></html>"""
-        (Path(a.out) / "index.html").write_text(page, encoding="utf-8")
-        print(f"HTML page saved to {a.out}/index.html")
+    from report import run_report
+    run_report(a.tz, a.out, a.html, FLOW_CSV, INC_CSV)
 
 
 def main():
